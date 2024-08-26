@@ -51,18 +51,8 @@ func (r *Response) Bytes() []byte {
 
 const delimiter = "\r\n"
 
-func main() {
-	l, err := net.Listen("tcp", "0.0.0.0:4221")
-	if err != nil {
-		fmt.Println("Failed to bind to port 4221")
-		os.Exit(1)
-	}
-
-	conn, err := l.Accept()
-	if err != nil {
-		fmt.Println("Error accepting connection: ", err.Error())
-		os.Exit(1)
-	}
+func handleConnection(conn net.Conn) {
+	defer conn.Close()
 
 	buff := make([]byte, 1024)
 	conn.Read(buff)
@@ -88,19 +78,33 @@ func main() {
 	if req.Path[0] != "echo" && req.Path[0] != "user-agent" {
 		resp := Response{StatusCode: http.StatusNotFound, Status: http.StatusText(http.StatusNotFound), ContentType: "text/plain", ContentLength: 0, Body: ""}
 		conn.Write(resp.Bytes())
-		conn.Close()
 		return
 	}
 
 	if req.Path[0] == "echo" {
 		resp := Response{StatusCode: http.StatusOK, Status: http.StatusText(http.StatusOK), ContentType: "text/plain", ContentLength: len(req.Path[1]), Body: req.Path[1]}
 		conn.Write(resp.Bytes())
-		conn.Close()
 		return
 	}
 
 	agent := req.Headers.Get("User-Agent")
 	resp := Response{StatusCode: http.StatusOK, Status: http.StatusText(http.StatusOK), ContentType: "text/plain", ContentLength: len(agent), Body: agent}
 	conn.Write(resp.Bytes())
-	conn.Close()
+}
+func main() {
+	l, err := net.Listen("tcp", "0.0.0.0:4221")
+	if err != nil {
+		fmt.Println("Failed to bind to port 4221")
+		os.Exit(1)
+	}
+
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection: ", err.Error())
+			os.Exit(1)
+		}
+
+		go handleConnection(conn)
+	}
 }
