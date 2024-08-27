@@ -6,8 +6,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 )
+
+const CRLF = "\r\n"
 
 type Headers map[string]string
 
@@ -16,87 +19,147 @@ func (h Headers) Get(key string) string {
 }
 
 func (h Headers) Set(key string, value string) {
+	if value == "" {
+		delete(h, key)
+		return
+	}
+
 	h[key] = value
 }
 
+type Params map[string]string
+
+func (p Params) Get(key string) string {
+	if val, ok := p[key]; ok {
+		return val
+	}
+
+	return ""
+}
+
 type Request struct {
-	Method  string
-	Path    []string
-	Headers Headers
-	Body    string
+	Method   string
+	Path     []string
+	FullPath string
+	Headers  Headers
+	Params   Params
+	Body     string
 }
 
 type Response struct {
-	StatusCode    int
-	Status        string
-	ContentType   string
-	ContentLength int
-	Body          string
+	StatusCode int
+	Status     string
+	Headers    Headers
+	Body       string
+}
+
+func textResponse(statusCode int, body string) Response {
+	resp := Response{StatusCode: statusCode, Status: http.StatusText(statusCode), Body: body, Headers: Headers{}}
+	resp.Headers.Set("Content-Type", "text/plain")
+	resp.Headers.Set("Content-Length", strconv.Itoa(len(body)))
+
+	return resp
 }
 
 func (r *Response) Bytes() []byte {
 	var out bytes.Buffer
 
 	out.WriteString(fmt.Sprintf("HTTP/1.1 %d %s", r.StatusCode, r.Status))
-	out.WriteString(delimiter)
-	out.WriteString(fmt.Sprintf("Content-Type: %s", r.ContentType))
-	out.WriteString(delimiter)
-	out.WriteString(fmt.Sprintf("Content-Length: %d", r.ContentLength))
-	out.WriteString(delimiter)
-	out.WriteString(delimiter)
+	out.WriteString(CRLF)
+	for k, v := range r.Headers {
+		out.WriteString(fmt.Sprintf("%s: %s", k, v))
+		out.WriteString(CRLF)
+	}
+	out.WriteString(CRLF)
 	out.WriteString(r.Body)
 
 	return out.Bytes()
 }
 
-const delimiter = "\r\n"
-
-func handleConnection(conn net.Conn) {
-	defer conn.Close()
-
-	buff := make([]byte, 1024)
-	conn.Read(buff)
-
-	str_buff := string(buff)
-
-	head := strings.Split(str_buff, delimiter+delimiter)[0]
-	body := strings.Split(str_buff, delimiter+delimiter)[1]
-
-	request_line := strings.SplitAfterN(head, delimiter, 2)[0]
-	headers := strings.SplitAfterN(head, delimiter, 2)[1]
-
-	method := strings.Split(request_line, " ")[0]
-	path := strings.Split(request_line, " ")[1]
-	sep_path := strings.Split(path, "/")[1:]
-
-	req := Request{Method: method, Path: sep_path, Headers: Headers{}, Body: body}
-	for _, header := range strings.Split(headers, delimiter) {
-		idx := strings.Index(header, ":")
-		req.Headers.Set(header[:idx], header[idx+1:])
-	}
-
-	if req.Path[0] != "echo" && req.Path[0] != "user-agent" {
-		resp := Response{StatusCode: http.StatusNotFound, Status: http.StatusText(http.StatusNotFound), ContentType: "text/plain", ContentLength: 0, Body: ""}
-		conn.Write(resp.Bytes())
-		return
-	}
-
-	if req.Path[0] == "echo" {
-		resp := Response{StatusCode: http.StatusOK, Status: http.StatusText(http.StatusOK), ContentType: "text/plain", ContentLength: len(req.Path[1]), Body: req.Path[1]}
-		conn.Write(resp.Bytes())
-		return
-	}
-
-	agent := req.Headers.Get("User-Agent")
-	resp := Response{StatusCode: http.StatusOK, Status: http.StatusText(http.StatusOK), ContentType: "text/plain", ContentLength: len(agent), Body: agent}
-	conn.Write(resp.Bytes())
+type Route struct {
+	allowedMethod string
+	handler       func(Request) Response
 }
-func main() {
-	l, err := net.Listen("tcp", "0.0.0.0:4221")
+
+type Router struct {
+	routes map[string]Route
+}
+
+func (r *Router) resolvePath(request Request) (Route, bool) {
+	if route, ok := r.routes[request.Method+" "+request.FullPath]; ok {
+		return route, true
+	}
+
+	for route_path, route := range r.routes {
+		if !strings.HasPrefix(route_path, request.Method+" ") {
+			continue
+		}
+
+		without_method := strings.TrimPrefix(route_path, request.Method+" ")
+		sep_route_path := strings.Split(without_method, "/")[1:]
+
+		if len(sep_route_path) > len(request.Path) {
+			continue
+		}
+
+		found := true
+		for i, route_part := range sep_route_path {
+			if route_part == request.Path[i] {
+				continue
+			}
+
+			if strings.HasPrefix(route_part, ":") {
+				request.Params[strings.TrimPrefix(route_part, ":")] = request.Path[i]
+			} else {
+				found = false
+				break
+			}
+		}
+
+		if found {
+			return route, true
+		}
+	}
+
+	return Route{}, false
+}
+
+func (r *Router) GET(path string, handler func(Request) Response) {
+	r.routes[http.MethodGet+" "+path] = Route{allowedMethod: http.MethodGet, handler: handler}
+}
+
+func (r *Router) POST(path string, handler func(Request) Response) {
+	r.routes[http.MethodPost+" "+path] = Route{allowedMethod: http.MethodPost, handler: handler}
+}
+
+func (r *Router) PUT(path string, handler func(Request) Response) {
+	r.routes[http.MethodPut+" "+path] = Route{allowedMethod: http.MethodPut, handler: handler}
+}
+
+func (r *Router) HEAD(path string, handler func(Request) Response) {
+	r.routes[http.MethodHead+" "+path] = Route{allowedMethod: http.MethodHead, handler: handler}
+}
+
+func (r *Router) DELETE(path string, handler func(Request) Response) {
+	r.routes[http.MethodDelete+" "+path] = Route{allowedMethod: http.MethodDelete, handler: handler}
+}
+
+func (r *Router) PATCH(path string, handler func(Request) Response) {
+	r.routes[http.MethodPatch+" "+path] = Route{allowedMethod: http.MethodPatch, handler: handler}
+}
+
+func NewRouter() *Router {
+	return &Router{routes: map[string]Route{}}
+}
+
+func (r *Router) Start(port int) {
+	l, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
 	if err != nil {
-		fmt.Println("Failed to bind to port 4221")
+		fmt.Printf("Failed to bind to port %d", port)
 		os.Exit(1)
 	}
+
+	fmt.Printf("Listening on port %d\n", port)
 
 	for {
 		conn, err := l.Accept()
@@ -105,6 +168,57 @@ func main() {
 			os.Exit(1)
 		}
 
-		go handleConnection(conn)
+		go r.handleConnection(conn)
 	}
+}
+
+func (r *Router) handleConnection(conn net.Conn) {
+	defer conn.Close()
+
+	buff := make([]byte, 1024)
+	conn.Read(buff)
+
+	str_buff := string(buff)
+
+	head := strings.Split(str_buff, CRLF+CRLF)[0]
+	body := strings.Split(str_buff, CRLF+CRLF)[1]
+
+	request_line := strings.SplitAfterN(head, CRLF, 2)[0]
+	headers := strings.SplitAfterN(head, CRLF, 2)[1]
+
+	method := strings.Split(request_line, " ")[0]
+	path := strings.Split(request_line, " ")[1]
+	sep_path := strings.Split(path, "/")[1:]
+
+	req := Request{Method: method, FullPath: path, Path: sep_path, Headers: Headers{}, Params: Params{}, Body: body}
+	for _, header := range strings.Split(headers, CRLF) {
+		idx := strings.Index(header, ":")
+		req.Headers.Set(header[:idx], header[idx+2:])
+	}
+
+	route, ok := r.resolvePath(req)
+	if !ok {
+		resp := Response{StatusCode: http.StatusNotFound, Status: http.StatusText(http.StatusNotFound), Body: "", Headers: Headers{}}
+		resp.Headers.Set("Content-Type", "text/plain")
+		resp.Headers.Set("Content-Length", "0")
+		conn.Write(resp.Bytes())
+		return
+	}
+
+	resp := route.handler(req)
+	conn.Write(resp.Bytes())
+}
+
+func main() {
+	router := NewRouter()
+
+	router.GET("/echo/:msg/:meow", func(req Request) Response {
+		return textResponse(http.StatusOK, req.Params.Get("msg"))
+	})
+
+	router.GET("/user-agent", func(req Request) Response {
+		return textResponse(http.StatusOK, req.Headers.Get("User-Agent"))
+	})
+
+	router.Start(4221)
 }
