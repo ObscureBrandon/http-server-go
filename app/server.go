@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -91,6 +92,20 @@ func (c *Context) text(statusCode int, body string) Response {
 	resp.Headers.Set("Content-Type", "text/plain")
 	resp.Headers.Set("Content-Length", strconv.Itoa(len(body)))
 
+	return resp
+}
+
+func (c *Context) json(statusCode int, body interface{}) Response {
+	resp := Response{StatusCode: statusCode, Status: http.StatusText(statusCode), Headers: Headers{}}
+	resp.Headers.Set("Content-Type", "application/json")
+
+	b, err := json.Marshal(body)
+	if err != nil {
+		return c.text(http.StatusInternalServerError, err.Error())
+	}
+
+	resp.Body = string(b)
+	resp.Headers.Set("Content-Length", strconv.Itoa(len(resp.Body)))
 	return resp
 }
 
@@ -270,6 +285,11 @@ func (r *Router) Start(port int) {
 	}
 }
 
+type User struct {
+	Name string `json:"name"`
+	Age  int    `json:"age"`
+}
+
 func main() {
 	router := NewRouter()
 
@@ -279,6 +299,12 @@ func main() {
 
 	router.GET("/user-agent", func(ctx Context) Response {
 		return ctx.text(http.StatusOK, ctx.Header("User-Agent"))
+	})
+
+	router.GET("/json", func(ctx Context) Response {
+		user := User{Name: "John", Age: 30}
+
+		return ctx.json(http.StatusOK, user)
 	})
 
 	router.Start(4221)
