@@ -68,6 +68,24 @@ type Context struct {
 	Request *Request
 }
 
+func (c *Context) Param(key string) string {
+	return c.Request.Params.Get(key)
+}
+
+func (c *Context) Cookie(key string) string {
+	for _, cookie := range c.Request.Cookies {
+		if cookie.Name == key {
+			return cookie.Value
+		}
+	}
+
+	return ""
+}
+
+func (c *Context) Header(key string) string {
+	return c.Request.Headers.Get(key)
+}
+
 func (c *Context) text(statusCode int, body string) Response {
 	resp := Response{StatusCode: statusCode, Status: http.StatusText(statusCode), Body: body, Headers: Headers{}}
 	resp.Headers.Set("Content-Type", "text/plain")
@@ -256,11 +274,11 @@ func main() {
 	router := NewRouter()
 
 	router.GET("/echo/:msg/:meow", func(ctx Context) Response {
-		return ctx.text(http.StatusOK, ctx.Request.Params.Get("msg"))
+		return ctx.text(http.StatusOK, ctx.Param("msg"))
 	})
 
 	router.GET("/user-agent", func(ctx Context) Response {
-		return ctx.text(http.StatusOK, ctx.Request.Headers.Get("User-Agent"))
+		return ctx.text(http.StatusOK, ctx.Header("User-Agent"))
 	})
 
 	router.Start(4221)
