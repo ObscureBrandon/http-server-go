@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/textproto"
 	"os"
 	"strconv"
 	"strings"
@@ -41,6 +42,11 @@ func (p Params) Get(key string) string {
 	return ""
 }
 
+type Cookie struct {
+	Name  string
+	Value string
+}
+
 type Request struct {
 	Method   string
 	Path     []string
@@ -48,6 +54,7 @@ type Request struct {
 	Headers  Headers
 	Params   Params
 	Body     string
+	Cookies  []*Cookie
 }
 
 type Response struct {
@@ -160,24 +167,32 @@ func NewRouter() *Router {
 	return &Router{routes: map[string]Route{}}
 }
 
-func (r *Router) Start(port int) {
-	l, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
-	if err != nil {
-		fmt.Printf("Failed to bind to port %d", port)
-		os.Exit(1)
+func parseCookies(headers Headers) []*Cookie {
+	lines := strings.Split(headers.Get("Cookie"), ";")
+	if len(lines) == 0 {
+		return []*Cookie{}
 	}
 
-	fmt.Printf("Listening on port %d\n", port)
+	cookies := make([]*Cookie, 0, len(lines))
+	for _, line := range lines {
+		line = textproto.TrimString(line)
 
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			fmt.Println("Error accepting connection: ", err.Error())
-			os.Exit(1)
+		var part string
+		for len(line) > 0 {
+			part, line, _ = strings.Cut(line, ";")
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+
+			name, val, _ := strings.Cut(part, "=")
+			name = textproto.TrimString(name)
+
+			cookies = append(cookies, &Cookie{Name: name, Value: val})
 		}
-
-		go r.handleConnection(conn)
 	}
+
+	return cookies
 }
 
 func (r *Router) handleConnection(conn net.Conn) {
@@ -198,12 +213,13 @@ func (r *Router) handleConnection(conn net.Conn) {
 	path := strings.Split(request_line, " ")[1]
 	sep_path := strings.Split(path, "/")[1:]
 
-	req := Request{Method: method, FullPath: path, Path: sep_path, Headers: Headers{}, Params: Params{}, Body: body}
+	req := &Request{Method: method, FullPath: path, Path: sep_path, Headers: Headers{}, Params: Params{}, Body: body}
 	for _, header := range strings.Split(headers, CRLF) {
 		idx := strings.Index(header, ":")
 		req.Headers.Set(header[:idx], header[idx+2:])
 	}
 
+	req.Cookies = parseCookies(req.Headers)
 	ctx := Context{Request: req}
 	route, ok := r.resolvePath(req)
 	if !ok {
@@ -214,6 +230,26 @@ func (r *Router) handleConnection(conn net.Conn) {
 
 	resp := route.handler(ctx)
 	conn.Write(resp.Bytes())
+}
+
+func (r *Router) Start(port int) {
+	l, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
+	if err != nil {
+		fmt.Printf("Failed to bind to port %d", port)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Listening on port %d\n", port)
+
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection: ", err.Error())
+			os.Exit(1)
+		}
+
+		go r.handleConnection(conn)
+	}
 }
 
 func main() {
